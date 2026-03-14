@@ -49,8 +49,10 @@ static xcb_atom_t   a_wm_delete_window;
 
 /* Cada workspace guarda su ventana (XCB_WINDOW_NONE = vacío) */
 static xcb_window_t ws_win[NUM_WS];
-static int          ws_cur = 0;
-static int          running = 1;
+static int          ws_cur   = 0;
+static int          running  = 1;
+/* Cuántos UNMAP_NOTIFY debemos ignorar (los que generamos nosotros) */
+static int          ignore_unmap = 0;
 
 /* ── Prototipos ───────────────────────────────────────────── */
 
@@ -105,8 +107,9 @@ static void border_set(xcb_window_t w, uint32_t pix) {
     xcb_change_window_attributes(conn, w, XCB_CW_BORDER_PIXEL, &pix);
 }
 
-/* ── Geometría: ventana ocupa toda la pantalla menos barra ── */
+/* ── Geometría ────────────────────────────────────────────── */
 
+/* Ventana principal: ocupa toda la pantalla menos la barra */
 static void tile(xcb_window_t w) {
     uint32_t v[5] = {
         0,
@@ -119,6 +122,34 @@ static void tile(xcb_window_t w) {
         XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
         XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
         XCB_CONFIG_WINDOW_BORDER_WIDTH, v);
+}
+
+/* Ventana flotante (dialog/transient): centrada al 60% de pantalla */
+static void float_center(xcb_window_t w) {
+    uint32_t sw = scr->width_in_pixels;
+    uint32_t sh = (uint32_t)(scr->height_in_pixels - BAR_HEIGHT);
+    uint32_t fw = sw * 60 / 100;
+    uint32_t fh = sh * 60 / 100;
+    uint32_t fx = (sw - fw) / 2;
+    uint32_t fy = BAR_HEIGHT + (sh - fh) / 2;
+    uint32_t v[5] = { fx, fy, fw, fh, BORDER_WIDTH };
+    xcb_configure_window(conn, w,
+        XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+        XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+        XCB_CONFIG_WINDOW_BORDER_WIDTH, v);
+}
+
+/* Devuelve 1 si la ventana tiene WM_TRANSIENT_FOR (es un dialog/popup) */
+static int is_transient(xcb_window_t w) {
+    xcb_get_property_reply_t *r = xcb_get_property_reply(conn,
+        xcb_get_property(conn, 0, w,
+            XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW, 0, 1), NULL);
+    int transient = 0;
+    if (r) {
+        transient = (xcb_get_property_value_length(r) > 0);
+        free(r);
+    }
+    return transient;
 }
 
 /* ── Focus ────────────────────────────────────────────────── */
@@ -144,9 +175,10 @@ static void focus(xcb_window_t w) {
 static void ws_go(int n) {
     if (n < 0 || n >= NUM_WS || n == ws_cur) return;
 
-    /* Ocultar ventana actual */
+    /* Ocultar ventana actual — marcar que el UNMAP_NOTIFY es nuestro */
     if (ws_win[ws_cur] != XCB_WINDOW_NONE) {
         border_set(ws_win[ws_cur], theme.pix_binact);
+        ignore_unmap++;
         xcb_unmap_window(conn, ws_win[ws_cur]);
     }
 
@@ -188,6 +220,7 @@ static void win_manage(xcb_window_t w) {
         for (int i = 0; i < NUM_WS; i++) {
             if (ws_win[i] == XCB_WINDOW_NONE) {
                 ws_win[i] = old;
+                ignore_unmap++;
                 xcb_unmap_window(conn, old);
                 border_set(old, theme.pix_binact);
                 break;
@@ -220,7 +253,15 @@ static void win_manage(xcb_window_t w) {
     /* Indicar al gestor de escritorio en qué workspace está */
     xcb_ewmh_set_wm_desktop(&ewmh, w, (uint32_t)ws_cur);
 
-    tile(w);
+    if (is_transient(w)) {
+        /* Dialog o ventana hija: flotar centrada, no ocupar workspace */
+        ws_win[ws_cur] = XCB_WINDOW_NONE;   /* no bloquea el slot */
+        float_center(w);
+        uint32_t ev_mask = XCB_EVENT_MASK_ENTER_WINDOW;
+        xcb_change_window_attributes(conn, w, XCB_CW_EVENT_MASK, &ev_mask);
+    } else {
+        tile(w);
+    }
     xcb_map_window(conn, w);
     focus(w);
     xcb_flush(conn);
@@ -373,6 +414,8 @@ static void on_map_request(xcb_map_request_event_t *e) {
 }
 
 static void on_unmap(xcb_unmap_notify_event_t *e) {
+    /* Si nosotros provocamos este unmap (cambio de workspace), ignorarlo */
+    if (ignore_unmap > 0) { ignore_unmap--; return; }
     win_forget(e->window);
 }
 

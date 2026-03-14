@@ -210,6 +210,7 @@ static void draw_bar(void) {
 /* ── Actualizar estado desde EWMH ────────────────────────── */
 
 static void update_state(void) {
+    /* Solo leer estado EWMH — NO recargar tema (causaría loop) */
     long d = get_long_prop(root, a_cur_desk);
     if (d >= 0 && d < NUM_WS) cur_ws = (int)d;
 
@@ -226,7 +227,7 @@ static void setup_bar_window(void) {
     XSetWindowAttributes attr = {0};
     attr.override_redirect = True;
     attr.background_pixel  = (unsigned long)theme.pix_bg;
-    attr.event_mask        = ExposureMask | PropertyChangeMask;
+    attr.event_mask        = ExposureMask;
 
     bar = XCreateWindow(dpy, root,
         0, 0, (unsigned)W, (unsigned)H, 0,
@@ -273,8 +274,8 @@ static void setup_bar_window(void) {
 /* ── Suscribirse a cambios de propiedades en la raíz ─────── */
 
 static void subscribe_root(void) {
-    XSelectInput(dpy, root,
-        PropertyChangeMask | SubstructureNotifyMask);
+    /* Solo escuchar cambios de propiedades EWMH del WM */
+    XSelectInput(dpy, root, PropertyChangeMask);
 }
 
 /* ── main ─────────────────────────────────────────────────── */
@@ -336,7 +337,9 @@ int main(void) {
                 draw_bar();
             } else if (ev.type == PropertyNotify) {
                 Atom a = ev.xproperty.atom;
-                if (a == a_cur_desk || a == a_active || a == a_wm_name) {
+    /* Solo actuar si el evento viene de la raíz y es un átomo que nos importa */
+            if (ev.xproperty.window == root &&
+                (a == a_cur_desk || a == a_active || a == a_wm_name)) {
                     update_state();
                     draw_bar();
                 }
