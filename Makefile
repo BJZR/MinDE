@@ -28,7 +28,7 @@ BAR_LIBS   = $(shell pkg-config --libs   x11 xft fontconfig)
 RUN_CFLAGS = $(shell pkg-config --cflags x11 xft fontconfig)
 RUN_LIBS   = $(shell pkg-config --libs   x11 xft fontconfig)
 
-BINS = minwm minibar minrun
+BINS = min-wm min-bar min-launch min-theme
 
 # ── Reglas ───────────────────────────────────────────────────
 
@@ -36,14 +36,17 @@ BINS = minwm minibar minrun
 
 all: $(BINS)
 
-minwm: minwm.c config.h
+min-wm: minwm.c config.h
 	$(CC) $(CFLAGS) $(WM_CFLAGS) -o $@ $< $(WM_LIBS)
 
-minibar: minibar.c config.h
+min-bar: minibar.c config.h
 	$(CC) $(CFLAGS) $(BAR_CFLAGS) -o $@ $< $(BAR_LIBS)
 
-minrun: minrun.c config.h
+min-launch: minrun.c config.h
 	$(CC) $(CFLAGS) $(RUN_CFLAGS) -o $@ $< $(RUN_LIBS)
+
+min-theme: minde-settings.c config.h
+	$(CC) $(CFLAGS) $(BAR_CFLAGS) -o $@ $< $(BAR_LIBS)
 
 # ── Instalación ──────────────────────────────────────────────
 
@@ -70,7 +73,7 @@ clean:
 help:
 	@echo "minDE — Entorno de escritorio mínimo en C"
 	@echo ""
-	@echo "  make          Compilar minwm, minibar, minrun"
+	@echo "  make          Compilar min-wm, min-bar, min-launch, min-theme"
 	@echo "  make install  Instalar en ~/.local/bin/"
 	@echo "  make clean    Eliminar binarios compilados"
 	@echo ""
