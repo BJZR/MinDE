@@ -52,7 +52,7 @@
 /* ── Comandos ─────────────────────────────────────────────── */
 
 #define TERMINAL  "xterm"           /* reemplaza con alacritty/kitty     */
-#define LAUNCHER  "minrun"          /* el launcher que compilamos nosotros*/
+#define LAUNCHER  "min-launch"          /* el launcher que compilamos nosotros*/
 
 /* ── Modificador y teclas ─────────────────────────────────── */
 
@@ -212,7 +212,43 @@ static inline void theme_load_gtk(Theme *t) {
 
 /* ── Inicializa y carga tema completo ────────────────────── */
 
+
+/* ── Lee ~/.config/minde/settings.conf (generado por minde-settings) ─ */
+static inline void theme_load_settings(Theme *t) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    char path[512];
+    snprintf(path, sizeof path, "%s/.config/minde/settings.conf", home);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] == '#') continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *k = line, *v = eq + 1;
+        char hex[8];
+        if (!strcmp(k, "bg"))     { strncpy(t->bg,     v, 7); t->bg[7]='\0';
+                                    t->pix_bg     = hex_to_pix(t->bg);     }
+        else if (!strcmp(k,"fg")) { strncpy(t->fg,     v, 7); t->fg[7]='\0'; }
+        else if (!strcmp(k,"accent")){ strncpy(t->accent,v,7); t->accent[7]='\0'; }
+        else if (!strcmp(k,"dim"))   { strncpy(t->dim,  v, 7); t->dim[7]='\0';   }
+        else if (!strcmp(k,"bact"))  { strncpy(t->bact, v, 7); t->bact[7]='\0';
+                                       t->pix_bact = hex_to_pix(t->bact);  }
+        else if (!strcmp(k,"binact")){ strncpy(t->binact,v,7); t->binact[7]='\0';
+                                       t->pix_binact=hex_to_pix(t->binact);}
+        else if (!strcmp(k,"urgent")){ strncpy(t->urgent,v,7); t->urgent[7]='\0';
+                                       t->pix_urgent=hex_to_pix(t->urgent);}
+        (void)hex;
+    }
+    fclose(f);
+    fprintf(stderr, "[theme] settings.conf cargado\n");
+}
+
 static inline void theme_init(Theme *t) {
     theme_defaults(t);
-    theme_load_gtk(t);
+    theme_load_gtk(t);      /* GTK si hay tema GTK instalado   */
+    theme_load_settings(t); /* settings.conf gana sobre todo   */
 }

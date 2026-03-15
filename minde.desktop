@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=minDE
+Comment=Entorno de escritorio mínimo en C
+Exec=/usr/bin/minde-session
+TryExec=/usr/bin/minde-session
+Type=XSession
+DesktopNames=minDE

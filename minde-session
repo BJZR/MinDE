@@ -1,0 +1,45 @@
+#!/bin/sh
+# minde-session — Script de arranque de minDE
+#
+# SDDM y LightDM ejecutan esto como la sesión X completa.
+# Este script DEBE mantenerse vivo — cuando termina, la sesión se cierra.
+# Por eso el último comando es "exec "$HOME/.local/bin/min-wm"" (sin &).
+#
+# Instalación:
+#   sudo cp minde-session /usr/bin/minde-session
+#  1.permisos del .desktop (debe ser legible por todos)
+#  sudo chmod 644 /usr/share/xsessions/minde.desktop
+
+#   2.permisos del script de sesión (legible y ejecutable)
+#   sudo chmod 755 /usr/bin/minde-session
+
+# ── 1. Cargar PATH y variables del usuario ────────────────────────────
+# SDDM no carga .bashrc — lo hacemos nosotros
+export HOME="${HOME:-/home/$(whoami)}"
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+# Cargar variables de entorno si existen
+[ -f "$HOME/.profile" ] && . "$HOME/.profile"
+[ -f "$HOME/.xprofile" ] && . "$HOME/.xprofile"
+
+# ── 2. Configuración básica de X ──────────────────────────────────────
+# Mapa de teclado (ajusta el layout si no es es)
+setxkbmap es 2>/dev/null || true
+
+# Cursor negro por defecto (evita el cursor X enorme)
+xsetroot -cursor_name left_ptr 2>/dev/null || true
+
+# Fondo negro mientras carga
+xsetroot -solid "#1e2030" 2>/dev/null || true
+
+# ── 3. Aplicaciones de arranque opcionales ────────────────────────────
+# Descomenta lo que uses:
+
+# picom &              # compositor (transparencias/sombras)
+# nitrogen --restore & # fondo de pantalla
+# dunst &              # notificaciones
+# nm-applet &          # icono de red
+
+# ── 4. Arrancar el WM (exec: este proceso REEMPLAZA al script) ────────
+# Si minwm muere, la sesión termina limpiamente.
+exec "$HOME/.local/bin/min-wm"
