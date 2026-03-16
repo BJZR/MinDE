@@ -19,14 +19,18 @@
  *   Super + D         → launcher (minrun)
  *   Super + Q         → cerrar ventana activa
  *   Super + Shift + Q → salir del WM
+ *   Super + Shift + R → recargar tema en vivo
  */
 
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/select.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_keysyms.h>
 #include <xcb/xcb_ewmh.h>
@@ -63,6 +67,13 @@ static void win_close(void);
 static void do_terminal(void);
 static void do_launcher(void);
 static void do_quit(void);
+static void do_reload(void);
+static void do_wifi(void);
+static void do_theme(void);
+static void do_clip(void);
+static void do_shortcut(void);
+static void do_session(void);
+static void do_launcher_kill(void);
 
 /* ── Tabla de keybinds ────────────────────────────────────── */
 
@@ -84,7 +95,13 @@ static Bind binds[] = {
     { XK_Return,MOD,              do_terminal  },
     { XK_d,     MOD,              do_launcher  },
     { XK_q,     MOD,              win_close    },
-    { XK_q,     MOD|XCB_MOD_MASK_SHIFT, do_quit },
+    { XK_q,     MOD|XCB_MOD_MASK_SHIFT, do_quit  },
+    { XK_r,     MOD|XCB_MOD_MASK_SHIFT, do_reload },
+    { XK_w,     MOD|XCB_MOD_MASK_SHIFT, do_wifi     },
+    { XK_t,     MOD|XCB_MOD_MASK_SHIFT, do_theme    },
+    { XK_p,     MOD|XCB_MOD_MASK_SHIFT, do_clip     },
+    { XK_o,     MOD|XCB_MOD_MASK_SHIFT, do_shortcut },
+    { XK_Escape,MOD,                    do_session  },
 };
 
 /* ── Utilidades ───────────────────────────────────────────── */
@@ -97,9 +114,56 @@ static void spawn(const char *cmd) {
     }
 }
 
-static void do_terminal(void) { spawn(TERMINAL); }
-static void do_launcher(void) { spawn(LAUNCHER); }
-static void do_quit(void)     { running = 0; }
+static void do_terminal(void)    { spawn(TERMINAL); }
+static void do_launcher(void)    { spawn(LAUNCHER); }
+static void do_quit(void)        { running = 0; }
+static void do_reload(void)      { kill(getpid(), SIGUSR1); }
+
+/* Lanza min-net (panel wifi de texto) */
+static void do_wifi(void) {
+    const char *home = getenv("HOME");
+    char cmd[512];
+    if (home) snprintf(cmd, sizeof cmd, "%s/.local/bin/min-net &", home);
+    else       snprintf(cmd, sizeof cmd, "min-net &");
+    spawn(cmd);
+}
+
+static void do_theme(void) {
+    const char *home = getenv("HOME");
+    char cmd[512];
+    if (home) snprintf(cmd, sizeof cmd, "%s/.local/bin/min-theme &", home);
+    else       snprintf(cmd, sizeof cmd, "min-theme &");
+    spawn(cmd);
+}
+
+static void do_clip(void) {
+    const char *home = getenv("HOME");
+    char cmd[512];
+    if (home) snprintf(cmd, sizeof cmd, "%s/.local/bin/min-clip &", home);
+    else       snprintf(cmd, sizeof cmd, "min-clip &");
+    spawn(cmd);
+}
+
+static void do_shortcut(void) {
+    const char *home = getenv("HOME");
+    char cmd[512];
+    if (home) snprintf(cmd, sizeof cmd, "%s/.local/bin/min-shortcut &", home);
+    else       snprintf(cmd, sizeof cmd, "min-shortcut &");
+    spawn(cmd);
+}
+
+static void do_session(void) {
+    const char *home = getenv("HOME");
+    char cmd[512];
+    if (home) snprintf(cmd, sizeof cmd, "%s/.local/bin/min-session &", home);
+    else       snprintf(cmd, sizeof cmd, "min-session &");
+    spawn(cmd);
+}
+
+/* Cierra min-launch si está abierto (al mapear una ventana real) */
+static void do_launcher_kill(void) {
+    spawn("pkill -x min-launch 2>/dev/null");
+}
 
 /* ── Borde ────────────────────────────────────────────────── */
 
@@ -109,14 +173,52 @@ static void border_set(xcb_window_t w, uint32_t pix) {
 
 /* ── Geometría ────────────────────────────────────────────── */
 
-/* Ventana principal: ocupa toda la pantalla menos la barra */
+/* Ventana principal:
+ *   - Lee WM_NORMAL_HINTS para saber el tamaño preferido
+ *   - Si cabe en pantalla → usar ese tamaño y centrar
+ *   - Si no cabe → ocupar toda la pantalla menos la barra       */
 static void tile(xcb_window_t w) {
+    int bh  = theme.bar_height;
+    int bw  = theme.border_width;
+    int sw  = (int)scr->width_in_pixels;
+    int sh  = (int)scr->height_in_pixels - bh;
+
+    /* Leer size hints de la ventana */
+    xcb_size_hints_t hints;
+    int has_hints = 0;
+    xcb_get_property_reply_t *rp = xcb_get_property_reply(conn,
+        xcb_get_property(conn, 0, w,
+            XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), NULL);
+    if (rp && xcb_get_property_value_length(rp) > 0) {
+        memcpy(&hints, xcb_get_property_value(rp), sizeof hints);
+        has_hints = 1;
+    }
+    if (rp) free(rp);
+
+    int wx = 0, wy = bh, ww = sw, wh = sh;
+
+    if (has_hints) {
+        /* PSize: tamaño preferido explícito del programa */
+        int pw = 0, ph = 0;
+        if (hints.flags & (1 << 3)) { pw = hints.width;  ph = hints.height; }
+        /* USSize: tamaño indicado por el usuario al lanzar la app */
+        if (hints.flags & (1 << 1)) { pw = hints.width;  ph = hints.height; }
+
+        if (pw > 32 && ph > 32 && pw < sw && ph < sh) {
+            /* La ventana cabe: centrarla con su tamaño natural */
+            ww = pw;
+            wh = ph;
+            wx = (sw - ww) / 2;
+            wy = bh + (sh - wh) / 2;
+        }
+        /* Si no cabe o no hay hints válidos: ocupar toda la pantalla */
+    }
+
     uint32_t v[5] = {
-        0,
-        BAR_HEIGHT,
-        scr->width_in_pixels,
-        (uint32_t)(scr->height_in_pixels - BAR_HEIGHT),
-        BORDER_WIDTH
+        (uint32_t)wx, (uint32_t)wy,
+        (uint32_t)(ww - bw * 2),
+        (uint32_t)(wh - bw * 2),
+        (uint32_t)bw
     };
     xcb_configure_window(conn, w,
         XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
@@ -124,15 +226,42 @@ static void tile(xcb_window_t w) {
         XCB_CONFIG_WINDOW_BORDER_WIDTH, v);
 }
 
-/* Ventana flotante (dialog/transient): centrada al 60% de pantalla */
+/* Ventana flotante (dialog/transient):
+ *   - Respeta el tamaño natural si cabe al 60%
+ *   - Siempre centrada sobre la pantalla                        */
 static void float_center(xcb_window_t w) {
-    uint32_t sw = scr->width_in_pixels;
-    uint32_t sh = (uint32_t)(scr->height_in_pixels - BAR_HEIGHT);
-    uint32_t fw = sw * 60 / 100;
-    uint32_t fh = sh * 60 / 100;
-    uint32_t fx = (sw - fw) / 2;
-    uint32_t fy = BAR_HEIGHT + (sh - fh) / 2;
-    uint32_t v[5] = { fx, fy, fw, fh, BORDER_WIDTH };
+    int bh  = theme.bar_height;
+    int bw  = theme.border_width;
+    int sw  = (int)scr->width_in_pixels;
+    int sh  = (int)scr->height_in_pixels - bh;
+
+    int fw = sw * 60 / 100;
+    int fh = sh * 60 / 100;
+
+    /* Intentar usar tamaño natural de la ventana */
+    xcb_get_property_reply_t *rp = xcb_get_property_reply(conn,
+        xcb_get_property(conn, 0, w,
+            XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS, 0, 18), NULL);
+    if (rp && xcb_get_property_value_length(rp) > 0) {
+        xcb_size_hints_t hints;
+        memcpy(&hints, xcb_get_property_value(rp), sizeof hints);
+        int pw = 0, ph = 0;
+        if (hints.flags & (1 << 3)) { pw = hints.width; ph = hints.height; }
+        if (hints.flags & (1 << 1)) { pw = hints.width; ph = hints.height; }
+        if (pw > 32 && ph > 32 && pw <= fw && ph <= fh) {
+            fw = pw; fh = ph;
+        }
+    }
+    if (rp) free(rp);
+
+    int fx = (sw - fw) / 2;
+    int fy = bh + (sh - fh) / 2;
+    uint32_t v[5] = {
+        (uint32_t)fx, (uint32_t)fy,
+        (uint32_t)(fw - bw * 2),
+        (uint32_t)(fh - bw * 2),
+        (uint32_t)bw
+    };
     xcb_configure_window(conn, w,
         XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
         XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
@@ -234,30 +363,25 @@ static void win_manage(xcb_window_t w) {
         return;   /* <-- salir aquí, no tocar ws_win[] */
     }
 
-    /* ── Ventana normal: ocupa el slot del workspace actual ── */
+    /* ── Ventana normal ── */
 
-    /* Si ya hay una ventana en este workspace, moverla a un slot libre
-     * y ocultarla (es una segunda app abierta en el mismo ws) */
+    /* Si el workspace ya tiene una ventana principal, la nueva
+     * ventana flota centrada sobre ella (no desplaza a la original) */
     if (ws_win[ws_cur] != XCB_WINDOW_NONE) {
-        xcb_window_t prev = ws_win[ws_cur];
-        /* Buscar slot libre */
-        int moved = 0;
-        for (int i = 0; i < NUM_WS; i++) {
-            if (ws_win[i] == XCB_WINDOW_NONE) {
-                ws_win[i] = prev;
-                ignore_unmap++;
-                xcb_unmap_window(conn, prev);
-                border_set(prev, theme.pix_binact);
-                moved = 1;
-                break;
-            }
-        }
-        /* Si no hay slot libre, la ventana anterior queda sin slot
-         * pero sigue mapeada — no la perdemos */
-        (void)moved;
+        uint32_t fmask = XCB_CW_BORDER_PIXEL | XCB_CW_EVENT_MASK;
+        uint32_t fvals[2] = {
+            theme.pix_bact,
+            XCB_EVENT_MASK_ENTER_WINDOW
+        };
+        xcb_change_window_attributes(conn, w, fmask, fvals);
+        float_center(w);
+        xcb_map_window(conn, w);
+        focus(w);
+        xcb_flush(conn);
+        return;   /* no tocar ws_win[] — ventana original intacta */
     }
 
-    /* Asignar al workspace actual */
+    /* Workspace vacío: asignar al slot */
     ws_win[ws_cur] = w;
 
     /* Configurar eventos y borde */
@@ -426,6 +550,8 @@ static void on_map_request(xcb_map_request_event_t *e) {
         }
         xcb_ewmh_get_atoms_reply_wipe(&wtype);
     }
+    /* Cerrar min-launch si está abierto */
+    do_launcher_kill();
     win_manage(e->window);
 }
 
@@ -467,6 +593,34 @@ static void on_enter(xcb_enter_notify_event_t *e) {
 }
 
 /* ── main ─────────────────────────────────────────────────── */
+
+/* Pipe para despertar el bucle de eventos en SIGUSR1 */
+int g_reload_pipe_w = -1;
+
+static void reload_signal_handler(int sig) {
+    (void)sig;
+    if (g_reload_pipe_w >= 0) {
+        char b = 1;
+        write(g_reload_pipe_w, &b, 1);
+    }
+}
+
+/* Aplica el tema recargado a todas las ventanas abiertas */
+static void reload_theme(void) {
+    theme_init(&theme);
+    fprintf(stderr, "min-wm: tema recargado borde=%s\n", theme.bact);
+    /* Re-aplicar bordes a todas las ventanas */
+    for (int i = 0; i < NUM_WS; i++) {
+        if (ws_win[i] == XCB_WINDOW_NONE) continue;
+        uint32_t pix = (i == ws_cur) ? theme.pix_bact : theme.pix_binact;
+        border_set(ws_win[i], pix);
+        /* Re-aplicar grosor de borde */
+        uint32_t bw = (uint32_t)theme.border_width;
+        xcb_configure_window(conn, ws_win[i],
+            XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
+    }
+    xcb_flush(conn);
+}
 
 int main(void) {
     /* Conectar a X */
@@ -532,24 +686,74 @@ int main(void) {
         "min-wm: listo | Super+1-5=ws | Super+Enter=term | "
         "Super+D=launcher | Super+Q=cerrar | Super+Shift+Q=salir\n");
 
-    /* ── Bucle de eventos ── */
-    xcb_generic_event_t *ev;
-    while (running && (ev = xcb_wait_for_event(conn))) {
-        switch (ev->response_type & ~0x80) {
-        case XCB_KEY_PRESS:
-            on_key_press((xcb_key_press_event_t *)ev);        break;
-        case XCB_MAP_REQUEST:
-            on_map_request((xcb_map_request_event_t *)ev);    break;
-        case XCB_UNMAP_NOTIFY:
-            on_unmap((xcb_unmap_notify_event_t *)ev);         break;
-        case XCB_DESTROY_NOTIFY:
-            on_destroy((xcb_destroy_notify_event_t *)ev);     break;
-        case XCB_CONFIGURE_REQUEST:
-            on_configure_request((xcb_configure_request_event_t *)ev); break;
-        case XCB_ENTER_NOTIFY:
-            on_enter((xcb_enter_notify_event_t *)ev);         break;
+    /* ── PID file para que min-theme pueda enviarnos señales ── */
+    {
+        const char *home = getenv("HOME");
+        if (home) {
+            char piddir[512], pidpath[512];
+            snprintf(piddir,  sizeof piddir,  "%s/.config/minde", home);
+            snprintf(pidpath, sizeof pidpath, "%s/.config/minde/min-wm.pid", home);
+            mkdir(piddir, 0755);
+            FILE *pf = fopen(pidpath, "w");
+            if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
         }
-        free(ev);
+    }
+
+    /* ── SIGUSR1: recargar tema en vivo ── */
+    /* Al recibir SIGUSR1 simplemente seteamos una bandera que el
+     * bucle de eventos comprueba. No llamamos a theme_init() desde
+     * el handler porque no es async-signal-safe.                  */
+    /* Usamos pipe para despertar xcb_wait_for_event sin bloquear  */
+    int reload_pipe[2];
+    if (pipe(reload_pipe) < 0) { reload_pipe[0] = reload_pipe[1] = -1; }
+
+    /* Guardamos el write-end en global para el handler */
+    extern int g_reload_pipe_w;
+    g_reload_pipe_w = reload_pipe[1];
+
+    signal(SIGUSR1, reload_signal_handler);
+
+    /* ── Bucle de eventos ── */
+    int xfd = xcb_get_file_descriptor(conn);
+    xcb_generic_event_t *ev;
+    while (running) {
+        /* Usar select() para vigilar tanto X como el pipe de reload */
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(xfd, &fds);
+        int maxfd = xfd;
+        if (reload_pipe[0] >= 0) {
+            FD_SET(reload_pipe[0], &fds);
+            if (reload_pipe[0] > maxfd) maxfd = reload_pipe[0];
+        }
+        if (select(maxfd + 1, &fds, NULL, NULL, NULL) < 0) break;
+
+        /* ¿Llegó señal de recarga? */
+        if (reload_pipe[0] >= 0 && FD_ISSET(reload_pipe[0], &fds)) {
+            char buf[16];
+            read(reload_pipe[0], buf, sizeof buf);  /* vaciar pipe */
+            reload_theme();
+        }
+
+        /* Procesar todos los eventos X pendientes */
+        while ((ev = xcb_poll_for_event(conn))) {
+            switch (ev->response_type & ~0x80) {
+            case XCB_KEY_PRESS:
+                on_key_press((xcb_key_press_event_t *)ev);        break;
+            case XCB_MAP_REQUEST:
+                on_map_request((xcb_map_request_event_t *)ev);    break;
+            case XCB_UNMAP_NOTIFY:
+                on_unmap((xcb_unmap_notify_event_t *)ev);         break;
+            case XCB_DESTROY_NOTIFY:
+                on_destroy((xcb_destroy_notify_event_t *)ev);     break;
+            case XCB_CONFIGURE_REQUEST:
+                on_configure_request((xcb_configure_request_event_t *)ev); break;
+            case XCB_ENTER_NOTIFY:
+                on_enter((xcb_enter_notify_event_t *)ev);         break;
+            }
+            free(ev);
+        }
+        if (xcb_connection_has_error(conn)) break;
     }
 
     /* Limpieza */

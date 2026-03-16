@@ -14,12 +14,15 @@
  *       $(pkg-config --cflags --libs x11 xft fontconfig) -lm
  */
 
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/stat.h>
+#include <signal.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xft/Xft.h>
@@ -222,7 +225,7 @@ static void update_state(void) {
 
 static void setup_bar_window(void) {
     W = DisplayWidth(dpy, scr);
-    H = BAR_HEIGHT;
+    H = theme.bar_height;
 
     XSetWindowAttributes attr = {0};
     attr.override_redirect = True;
@@ -280,6 +283,15 @@ static void subscribe_root(void) {
 
 /* ── main ─────────────────────────────────────────────────── */
 
+int g_bar_reload_w = -1;
+static void bar_reload_handler(int sig) {
+    (void)sig;
+    if (g_bar_reload_w >= 0) {
+        char b = 1;
+        write(g_bar_reload_w, &b, 1);
+    }
+}
+
 int main(void) {
     dpy = XOpenDisplay(NULL);
     if (!dpy) {
@@ -302,7 +314,35 @@ int main(void) {
 
     /* Tema y fuente */
     theme_init(&theme);
-    font = XftFontOpenName(dpy, scr, FONT_NAME);
+    {
+        /* Construir patrón fontconfig desde settings.conf */
+        char fpattern[200];
+        /* Leer font y font_size del settings.conf */
+        char fname[128] = "monospace";
+        int  fsize = 9;
+        const char *home = getenv("HOME");
+        if (home) {
+            char spath[512];
+            snprintf(spath, sizeof spath, "%s/.config/minde/settings.conf", home);
+            FILE *sf = fopen(spath, "r");
+            if (sf) {
+                char line[256];
+                while (fgets(line, sizeof line, sf)) {
+                    line[strcspn(line, "\r\n")] = '\0';
+                    char *eq = strchr(line, '=');
+                    if (!eq) continue;
+                    *eq = '\0';
+                    if (!strcmp(line, "font"))      strncpy(fname, eq+1, 127);
+                    if (!strcmp(line, "font_size")) fsize = atoi(eq+1);
+                }
+                fclose(sf);
+            }
+        }
+        snprintf(fpattern, sizeof fpattern,
+                 "%s:size=%d:antialias=true", fname, fsize);
+        font = XftFontOpenName(dpy, scr, fpattern);
+        if (!font) font = XftFontOpenName(dpy, scr, FONT_NAME);
+    }
     if (!font) {
         /* Fallback a fixed si no hay la fuente pedida */
         font = XftFontOpenName(dpy, scr, "fixed:size=9");
@@ -326,6 +366,24 @@ int main(void) {
 
     int xfd = ConnectionNumber(dpy);
 
+    /* ── PID file para que min-theme pueda enviarnos señales ── */
+    int bar_reload_pipe[2];
+    pipe(bar_reload_pipe);
+    {
+        const char *home = getenv("HOME");
+        if (home) {
+            char pidpath[512];
+            snprintf(pidpath, sizeof pidpath,
+                     "%s/.config/minde/min-bar.pid", home);
+            FILE *pf = fopen(pidpath, "w");
+            if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
+        }
+    }
+    /* Handler SIGUSR1: escribir en pipe para despertar select() */
+    extern int g_bar_reload_w;
+    g_bar_reload_w = bar_reload_pipe[1];
+    signal(SIGUSR1, bar_reload_handler);
+
     /* ── Bucle de eventos con timeout de 1s para el reloj ── */
     for (;;) {
         /* Procesar todos los eventos pendientes */
@@ -346,13 +404,52 @@ int main(void) {
             }
         }
 
-        /* Esperar 1 segundo o hasta que llegue un evento X */
+        /* Esperar 1s o evento X o señal de recarga */
         fd_set fds;
         struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
         FD_ZERO(&fds);
         FD_SET(xfd, &fds);
-        if (select(xfd + 1, &fds, NULL, NULL, &tv) == 0) {
-            /* Timeout: actualizar reloj */
+        FD_SET(bar_reload_pipe[0], &fds);
+        int maxfd = xfd > bar_reload_pipe[0] ? xfd : bar_reload_pipe[0];
+        int sel = select(maxfd + 1, &fds, NULL, NULL, &tv);
+        if (sel == 0) {
+            draw_bar();  /* timeout: actualizar reloj */
+        } else if (sel > 0 && FD_ISSET(bar_reload_pipe[0], &fds)) {
+            /* Señal de recarga: reiniciar fuente y colores */
+            char rbuf[16]; read(bar_reload_pipe[0], rbuf, sizeof rbuf);
+            theme_init(&theme);
+            /* Recargar fuente */
+            XftFontClose(dpy, font);
+            char fname2[128]="monospace"; int fsize2=9;
+            const char *h2 = getenv("HOME");
+            if (h2) {
+                char sp[512];
+                snprintf(sp,sizeof sp,"%s/.config/minde/settings.conf",h2);
+                FILE *sf=fopen(sp,"r"); char ln[256];
+                if(sf){while(fgets(ln,sizeof ln,sf)){
+                    ln[strcspn(ln,"\r\n")]='\0';
+                    char *eq=strchr(ln,'='); if(!eq)continue; *eq='\0';
+                    if(!strcmp(ln,"font"))strncpy(fname2,eq+1,127);
+                    if(!strcmp(ln,"font_size"))fsize2=atoi(eq+1);
+                }fclose(sf);}
+            }
+            char fp2[200];
+            snprintf(fp2,sizeof fp2,"%s:size=%d:antialias=true",fname2,fsize2);
+            font = XftFontOpenName(dpy,scr,fp2);
+            if(!font) font=XftFontOpenName(dpy,scr,FONT_NAME);
+            /* Realocar colores */
+            alloc_color(&c_bg,    theme.bg);
+            alloc_color(&c_fg,    theme.fg);
+            alloc_color(&c_accent,theme.accent);
+            alloc_color(&c_dim,   theme.dim);
+            alloc_color(&c_urgent,theme.urgent);
+            /* Cambiar alto de barra */
+            H = theme.bar_height;
+            XResizeWindow(dpy, bar, (unsigned)W, (unsigned)H);
+            long strut[12]={0};
+            strut[2]=H; strut[8]=0; strut[9]=W-1;
+            XChangeProperty(dpy,bar,a_strut,XA_CARDINAL,32,
+                PropModeReplace,(unsigned char*)strut,12);
             draw_bar();
         }
     }

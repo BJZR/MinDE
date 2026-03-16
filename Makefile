@@ -28,7 +28,7 @@ BAR_LIBS   = $(shell pkg-config --libs   x11 xft fontconfig)
 RUN_CFLAGS = $(shell pkg-config --cflags x11 xft fontconfig)
 RUN_LIBS   = $(shell pkg-config --libs   x11 xft fontconfig)
 
-BINS = min-wm min-bar min-launch min-theme
+BINS = min-wm min-bar min-launch min-theme min-net min-clip min-shortcut min-session
 
 # ── Reglas ───────────────────────────────────────────────────
 
@@ -45,8 +45,22 @@ min-bar: min-bar.c config.h
 min-launch: min-launch.c config.h
 	$(CC) $(CFLAGS) $(RUN_CFLAGS) -o $@ $< $(RUN_LIBS)
 
-min-theme: min-theme.c
+min-theme: min-theme.c config.h
 	$(CC) $(CFLAGS) $(BAR_CFLAGS) -o $@ $< $(BAR_LIBS)
+
+min-net: min-net.c config.h
+	$(CC) $(CFLAGS) $(RUN_CFLAGS) -o $@ $< $(RUN_LIBS)
+
+min-clip: min-clip.c config.h
+	$(CC) $(CFLAGS) $(RUN_CFLAGS) -o $@ $< $(RUN_LIBS)
+
+min-shortcut: min-shortcut.c config.h
+	$(CC) $(CFLAGS) $(RUN_CFLAGS) -o $@ $< $(RUN_LIBS)
+
+min-session: min-session.c config.h
+	$(CC) $(CFLAGS) $(RUN_CFLAGS) -o $@ $< $(RUN_LIBS)
+
+
 
 # ── Instalación ──────────────────────────────────────────────
 
@@ -54,6 +68,8 @@ DESTDIR = $(HOME)/.local/bin
 
 install: all
 	@mkdir -p $(DESTDIR)
+	@pkill -x min-clip 2>/dev/null || true
+	@pkill -x min-net  2>/dev/null || true
 	cp -v $(BINS) $(DESTDIR)/
 	@echo ""
 	@echo "Instalado en $(DESTDIR)"
@@ -73,7 +89,7 @@ clean:
 help:
 	@echo "minDE — Entorno de escritorio mínimo en C"
 	@echo ""
-	@echo "  make          Compilar min-wm, min-bar, min-launch, min-theme"
+	@echo "  make          Compilar min-wm, min-bar, min-launch, min-theme, min-net"
 	@echo "  make install  Instalar en ~/.local/bin/"
 	@echo "  make clean    Eliminar binarios compilados"
 	@echo ""
@@ -84,3 +100,5 @@ help:
 	@echo "  Super + D          Launcher (minrun)"
 	@echo "  Super + Q          Cerrar ventana activa"
 	@echo "  Super + Shift + Q  Salir del WM"
+
+	@echo "  Super + Shift + W  Panel WiFi (min-net)"

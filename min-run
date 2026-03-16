@@ -1,0 +1,42 @@
+#!/bin/sh
+# min-run — Script de arranque de minDE
+#
+# SDDM y LightDM ejecutan esto como la sesión X completa.
+# Este script DEBE mantenerse vivo — cuando termina, la sesión termina.
+#
+# Instalación:
+#   sudo cp min-run /usr/bin/min-run
+#   sudo chmod 755 /usr/bin/min-run
+#   sudo cp minde.desktop /usr/share/xsessions/minde.desktop
+#   sudo chmod 644 /usr/share/xsessions/minde.desktop
+
+# ── 1. Variables de entorno ────────────────────────────────
+export HOME="${HOME:-/home/$(whoami)}"
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+[ -f "$HOME/.profile"  ] && . "$HOME/.profile"
+[ -f "$HOME/.xprofile" ] && . "$HOME/.xprofile"
+
+# ── 2. Configuración básica de X ──────────────────────────
+setxkbmap es 2>/dev/null || true
+xsetroot -cursor_name left_ptr 2>/dev/null || true
+xsetroot -solid "#1e2030" 2>/dev/null || true
+
+# ── 3. Servicios en segundo plano ─────────────────────────
+# Agente polkit (autenticación gráfica)
+if command -v min-polkit >/dev/null 2>&1; then
+    min-polkit &
+elif command -v lxpolkit >/dev/null 2>&1; then
+    lxpolkit &
+elif command -v /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 >/dev/null 2>&1; then
+    /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 &
+fi
+
+# Daemon de portapapeles
+"$HOME/.local/bin/min-clip" --daemon &
+
+# Compositor (descomenta si tienes picom instalado)
+# picom --daemon &
+
+# ── 4. WM (exec: reemplaza este proceso) ──────────────────
+exec "$HOME/.local/bin/min-wm"

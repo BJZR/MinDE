@@ -76,6 +76,9 @@ typedef struct {
     uint32_t pix_binact;
     uint32_t pix_urgent;
     uint32_t pix_bg;
+    /* layout — sobreescriben las constantes de compilación */
+    int border_width;
+    int bar_height;
 } Theme;
 
 /* ── Inicializa tema con valores por defecto ─────────────── */
@@ -93,6 +96,8 @@ static inline void theme_defaults(Theme *t) {
     t->pix_binact = PIX_BORDER_INACT;
     t->pix_urgent = PIX_URGENT;
     t->pix_bg     = PIX_BG;
+    t->border_width = BORDER_WIDTH;
+    t->bar_height   = BAR_HEIGHT;
 }
 
 /* ── Convierte "#rrggbb" → uint32_t 0xRRGGBB ─────────────── */
@@ -239,12 +244,15 @@ static inline void theme_load_settings(Theme *t) {
                                        t->pix_bact = hex_to_pix(t->bact);  }
         else if (!strcmp(k,"binact")){ strncpy(t->binact,v,7); t->binact[7]='\0';
                                        t->pix_binact=hex_to_pix(t->binact);}
-        else if (!strcmp(k,"urgent")){ strncpy(t->urgent,v,7); t->urgent[7]='\0';
-                                       t->pix_urgent=hex_to_pix(t->urgent);}
+        else if (!strcmp(k,"urgent"))     { strncpy(t->urgent,v,7); t->urgent[7]='\0';
+                                              t->pix_urgent=hex_to_pix(t->urgent);}
+        else if (!strcmp(k,"border_width"))   { int n=atoi(v); if(n>=0&&n<=8) t->border_width=n; }
+        else if (!strcmp(k,"bar_height"))     { int n=atoi(v); if(n>=8&&n<=64) t->bar_height=n;  }
         (void)hex;
     }
     fclose(f);
-    fprintf(stderr, "[theme] settings.conf cargado\n");
+    fprintf(stderr, "[theme] settings.conf cargado (borde=%d barra=%d)\n",
+            t->border_width, t->bar_height);
 }
 
 static inline void theme_init(Theme *t) {

@@ -23,6 +23,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
@@ -158,13 +159,35 @@ static void config_load(void) {
 
 /* ── Guardar configuración ───────────────────────────────────────────── */
 
+/* Envía SIGUSR1 a un proceso cuyo PID está en un archivo */
+static void notify_pid_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    int pid = 0;
+    fscanf(f, "%d", &pid);
+    fclose(f);
+    if (pid > 1) kill((pid_t)pid, SIGUSR1);
+}
+
+static void notify_reload(void) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    char path[512];
+    snprintf(path, sizeof path,
+             "%s/.config/minde/min-wm.pid", home);
+    notify_pid_file(path);
+    snprintf(path, sizeof path,
+             "%s/.config/minde/min-bar.pid", home);
+    notify_pid_file(path);
+}
+
 static int config_save(void) {
     char path[512];
     config_path(path, sizeof path);
 
     /* Crear directorio si no existe */
     char dir[512];
-    strncpy(dir, path, sizeof dir - 1);
+    snprintf(dir, sizeof dir, "%s", path);
     char *slash = strrchr(dir, '/');
     if (slash) {
         *slash = '\0';
@@ -206,16 +229,16 @@ static XftDraw  *xd;
 static XftFont  *font_ui;
 static XftFont  *font_sm;
 
-/* Colores UI (fijos, no del tema del usuario) */
-#define UI_BG      "#1a1b26"
-#define UI_PANEL   "#24283b"
-#define UI_FG      "#c0caf5"
-#define UI_DIM     "#565f89"
-#define UI_ACCENT  "#7aa2f7"
-#define UI_BTN     "#2d3f76"
-#define UI_BTN_HOV "#3d4f86"
+/* Colores UI — se inicializan desde cfg (tema del usuario) */
+static char UI_BG    [8] = "#1a1b26";
+static char UI_PANEL [8] = "#24283b";
+static char UI_FG    [8] = "#c0caf5";
+static char UI_DIM   [8] = "#565f89";
+static char UI_ACCENT[8] = "#7aa2f7";
+static char UI_BTN   [8] = "#2d3f76";
+static char UI_BTN_HOV[8]= "#3d4f86";
 #define UI_SUCCESS "#9ece6a"
-#define UI_BORDER  "#414868"
+static char UI_BORDER[8] = "#414868";
 
 static XftColor c_bg, c_panel, c_fg, c_dim, c_accent;
 static XftColor c_btn, c_btn_hov, c_success, c_border;
@@ -588,8 +611,8 @@ static void draw_tab_font(void) {
 
     char preview[128];
     snprintf(preview, sizeof preview,
-             "Muestra: %s tamaño %d  —  0123456789  AaBbCc",
-             cfg.font, cfg.font_size);
+             "Muestra: %.*s %d  —  0123 AaBb",
+             80, cfg.font, cfg.font_size);
 
     /* Cargar fuente de preview */
     char fpattern[200];
@@ -748,7 +771,7 @@ static void commit_field(void) {
     case FIELD_BINACT: dst = cfg.binact; break;
     case FIELD_URGENT: dst = cfg.urgent; break;
     case FIELD_FONT:
-        strncpy(cfg.font, field_buf, sizeof cfg.font - 1);
+        snprintf(cfg.font, sizeof cfg.font, "%s", field_buf);
         break;
     }
     if (dst) {
@@ -766,8 +789,9 @@ static void on_button(int id) {
     if (id == BTN_APPLY) {
         commit_field();
         if (config_save()) {
+            notify_reload();
             snprintf(status_msg, sizeof status_msg,
-                "Guardado. Reinicia minwm/minibar para aplicar los cambios.");
+                "Guardado. Cambios aplicados en vivo.");
             status_ok = 1;
         } else {
             snprintf(status_msg, sizeof status_msg,
@@ -858,7 +882,7 @@ static void on_click(int mx, int my) {
             case FIELD_FONT:   cur = cfg.font;   break;
             }
             if (cur) {
-                strncpy(field_buf, cur, sizeof field_buf - 1);
+                snprintf(field_buf, sizeof field_buf, "%s", cur);
                 field_len = strlen(field_buf);
             }
             return;
@@ -927,6 +951,19 @@ static void on_key(XKeyEvent *e) {
 
 int main(void) {
     config_load();
+
+    /* Sincronizar colores UI con el tema cargado */
+    memcpy(UI_BG,     cfg.bg,     8);
+    memcpy(UI_PANEL,  cfg.binact, 8);   /* panel = borde inactivo (oscuro) */
+    memcpy(UI_FG,     cfg.fg,     8);
+    memcpy(UI_DIM,    cfg.dim,    8);
+    memcpy(UI_ACCENT, cfg.accent, 8);
+    /* BTN: mezcla entre bg y accent — usar borde inactivo */
+    memcpy(UI_BTN,    cfg.binact, 8);
+    /* BTN_HOV: borde activo */
+    memcpy(UI_BTN_HOV,cfg.bact,   8);
+    /* BORDER: dim */
+    memcpy(UI_BORDER, cfg.dim,    8);
 
     dpy = XOpenDisplay(NULL);
     if (!dpy) {
