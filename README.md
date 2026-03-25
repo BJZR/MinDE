@@ -1,2 +1,2 @@
 # MinDE
-- entorno de escritorio minimalista.
+- entorno grafico minimalista.
