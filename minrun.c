@@ -374,7 +374,7 @@ static void setup_window(void) {
         &attr);
 
     /* Nombre de la ventana */
-    XStoreName(dpy, win, "min-launch");
+    XStoreName(dpy, win, "minrun");
 
     /* Xft draw context */
     xd = XftDrawCreate(dpy, win,
